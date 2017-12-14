@@ -3,7 +3,7 @@
 - step:
     name: Train model
     image: gcr.io/tensorflow/tensorflow:1.3.0-devel-gpu
-    command: python train_simple.py --no_render {parameters}
+    command: pip install -r requirements.txt;python train_simple.py --no_render {parameters}
     parameters:
       - name: num_episodes
         pass-as: --num_episodes={v}
