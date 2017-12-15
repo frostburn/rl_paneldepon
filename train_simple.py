@@ -101,12 +101,26 @@ class Agent(object):
         print_up(5, outfile=sio)
         return sio
 
+    @property
+    def variables(self):
+        return [self.W_hidden, self.b_hidden, self.W_output, self.b_output]
+
     def dump(self, session):
         outputs_dir = os.getenv('VH_OUTPUTS_DIR', '/tmp/tensorflow/gym_paneldepon/outputs')
-        arrays = session.run([self.W_hidden, self.b_hidden, self.W_output, self.b_output])
+        if not os.path.isdir(outputs_dir):
+            os.makedirs(outputs_dir)
+        arrays = session.run(self.variables)
         for arr, name in zip(arrays, ["W_hidden", "b_hidden", "W_output", "b_output"]):
             filename = os.path.join(outputs_dir, "{}.csv".format(name))
             np.savetxt(filename, arr, delimiter=",")
+        print("Saved parameters to {}".format(outputs_dir))
+
+    def load(self, session, params_dir):
+        for variable, name in zip(self.variables, ["W_hidden", "b_hidden", "W_output", "b_output"]):
+            filename = os.path.join(params_dir, "{}.csv".format(name))
+            arr = np.loadtxt(filename, delimiter=",")
+            session.run(variable.assign(arr))
+        print("Loaded parameters from {}".format(params_dir))
 
 
 def main(*args, **kwargs):
@@ -115,8 +129,10 @@ def main(*args, **kwargs):
     merged = tf.summary.merge_all()
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
+        if FLAGS.params_dir:
+            agent.load(sess, FLAGS.params_dir)
         for i in range(FLAGS.num_episodes):
-            exploration = 1 / (0.1 * i + 2)
+            exploration = FLAGS.exploration / (0.1 * i + 2)
             vh_log({"exploration": exploration}, i)
             total_reward = 0
             state = agent.env.reset()
@@ -172,7 +188,12 @@ if __name__ == "__main__":
                         help='Initial learning rate')
     parser.add_argument('--log_dir', type=str, default='/tmp/tensorflow/gym_paneldepon/logs/rl_with_summaries',
                         help='Summaries log directory')
-    parser.add_argument('--no_render', action='store_true')
+    parser.add_argument('--no_render', action='store_true',
+                        help="Don't render visuals for episodes")
+    parser.add_argument('--params_dir', type=str, default=None,
+                        help='Parameters directory for initial values')
+    parser.add_argument('--exploration', type=float, default=1.0,
+                        help='Initial level of exploration for training')
     FLAGS, unparsed = parser.parse_known_args()
     FLAGS.do_render = not FLAGS.no_render
     main_fun = main_with_render if FLAGS.do_render else main
