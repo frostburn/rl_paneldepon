@@ -29,3 +29,9 @@
       - ls -la
       - nvidia-smi
       - python --version
+
+- step:
+    name: Dependencies check
+    image: gcr.io/tensorflow/tensorflow:1.3.0-devel-gpu
+    command:
+      - pip freeze
