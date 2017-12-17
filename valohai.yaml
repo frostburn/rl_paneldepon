@@ -31,8 +31,6 @@
       - ls -la
       - nvidia-smi
       - python --version
-      - echo $CC
-      - gcc --version
 
 - step:
     name: Dependencies check
