@@ -5,13 +5,13 @@
     image: gcr.io/tensorflow/tensorflow:1.3.0-devel-gpu
     command:
       - pip install -r requirements.txt
-      - python train_simple.py --no_render {parameters}
+      - python train_deep.py --no_render {parameters}
     parameters:
       - name: num_episodes
         pass-as: --num_episodes={v}
         description: Number of episodes to run the trainer
         type: integer
-        default: 300
+        default: 2000
       - name: num_steps
         pass-as: --num_steps={v}
         description: Number of steps per episode

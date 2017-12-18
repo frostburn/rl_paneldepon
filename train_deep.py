@@ -26,9 +26,9 @@ class Agent(object):
     HISTORY_SIZE = 4
     KERNEL_SIZE = 5
     NUM_FEATURES = 20
-    FC_1_SIZE = 1000
-    FC_2_SIZE = 1000
-    REPLAY_SIZE = 10000
+    FC_1_SIZE = 200
+    FC_2_SIZE = 200
+    REPLAY_SIZE = 1000
     GAMMA = 0.99
 
     def __init__(self, session):
