@@ -26,8 +26,8 @@ class Agent(object):
     HISTORY_SIZE = 4
     KERNEL_SIZE = 5
     NUM_FEATURES = 20
-    HIDDEN_1_SIZE = 1000
-    HIDDEN_2_SIZE = 1000
+    FC_1_SIZE = 1000
+    FC_2_SIZE = 1000
     REPLAY_SIZE = 10000
     GAMMA = 0.99
 
@@ -48,8 +48,8 @@ class Agent(object):
         else:
             self.box_activations = self.box_inputs
             self.NUM_FEATURES = self.box_shape[-1]
-        self.make_hidden_1_graph()
-        self.make_hidden_2_graph()
+        self.make_fc_1_graph()
+        self.make_fc_2_graph()
         self.make_output_graph()
         self.make_loss_graph()
         self.make_train_graph()
@@ -58,10 +58,10 @@ class Agent(object):
         if FLAGS.use_convolution:
             variable_summaries(self.W_conv, "W_conv")
             variable_summaries(self.b_conv, "b_conv")
-        variable_summaries(self.W_hidden_1, "W_hidden_1")
-        variable_summaries(self.b_hidden_1, "b_hidden_1")
-        variable_summaries(self.W_hidden_2, "W_hidden_2")
-        variable_summaries(self.b_hidden_2, "b_hidden_2")
+        variable_summaries(self.W_fc_1, "W_fc_1")
+        variable_summaries(self.b_fc_1, "b_fc_1")
+        variable_summaries(self.W_fc_2, "W_fc_2")
+        variable_summaries(self.b_fc_2, "b_fc_2")
         variable_summaries(self.W_output, "W_output")
         variable_summaries(self.b_output, "b_output")
 
@@ -90,7 +90,7 @@ class Agent(object):
                 z = conv2d(box, self.W_conv) + self.b_conv
                 self.box_activations.append(tf.sigmoid(z))
 
-    def make_hidden_1_graph(self):
+    def make_fc_1_graph(self):
         conv_layer_size = self.NUM_FEATURES * self.box_shape[1] * self.box_shape[2]
         with tf.name_scope("flatten"):
             flat_input = self.chain_inputs[:]
@@ -99,25 +99,25 @@ class Agent(object):
             flat_input = tf.concat(flat_input, 1)
         n_flat = self.HISTORY_SIZE * (1 + conv_layer_size)
 
-        with tf.name_scope("hidden_1"):
-            self.W_hidden_1 = weight_variable([n_flat, self.HIDDEN_1_SIZE], name="W")
-            self.b_hidden_1 = bias_variable([self.HIDDEN_1_SIZE], name="b")
-            z = tf.matmul(flat_input, self.W_hidden_1) + self.b_hidden_1
-            self.hidden_1_activation = tf.sigmoid(z)
+        with tf.name_scope("fully_connected_1"):
+            self.W_fc_1 = weight_variable([n_flat, self.FC_1_SIZE], name="W")
+            self.b_fc_1 = bias_variable([self.FC_1_SIZE], name="b")
+            z = tf.matmul(flat_input, self.W_fc_1) + self.b_fc_1
+            self.fc_1_activation = tf.sigmoid(z)
 
-    def make_hidden_2_graph(self):
-        with tf.name_scope("hidden_2"):
-            self.W_hidden_2 = weight_variable([self.HIDDEN_1_SIZE, self.HIDDEN_2_SIZE], name="W")
-            self.b_hidden_2 = bias_variable([self.HIDDEN_2_SIZE], name="b")
-            z = tf.matmul(self.hidden_1_activation, self.W_hidden_2) + self.b_hidden_2
-            self.hidden_2_activation = tf.sigmoid(z)
+    def make_fc_2_graph(self):
+        with tf.name_scope("fully_connected_2"):
+            self.W_fc_2 = weight_variable([self.FC_1_SIZE, self.FC_2_SIZE], name="W")
+            self.b_fc_2 = bias_variable([self.FC_2_SIZE], name="b")
+            z = tf.matmul(self.fc_1_activation, self.W_fc_2) + self.b_fc_2
+            self.fc_2_activation = tf.sigmoid(z)
 
     def make_output_graph(self):
         self.n_outputs = self.env.action_space.n
         with tf.name_scope("output"):
-            self.W_output = weight_variable([self.HIDDEN_2_SIZE, self.n_outputs], name="W")
+            self.W_output = weight_variable([self.FC_2_SIZE, self.n_outputs], name="W")
             self.b_output = bias_variable([self.n_outputs], name="b")
-            z = tf.matmul(self.hidden_2_activation, self.W_output) + self.b_output
+            z = tf.matmul(self.fc_2_activation, self.W_output) + self.b_output
             self.output = z
             self.action = tf.argmax(self.output, 1)
 
@@ -181,9 +181,11 @@ class Agent(object):
     def variable_names(self):
         if FLAGS.use_convolution:
             names = ["W_conv", "b_conv"]
+        else:
+            names = []
         return names + [
-            "W_hidden_1", "b_hidden_1",
-            "W_hidden_2", "b_hidden_2",
+            "W_fc_1", "b_fc_1",
+            "W_fc_2", "b_fc_2",
             "W_output", "b_output",
         ]
 
