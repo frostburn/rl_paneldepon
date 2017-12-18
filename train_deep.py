@@ -13,7 +13,7 @@ import tensorflow as tf
 from gym_paneldepon.env import register
 from gym_paneldepon.util import print_up
 
-from util import bias_variable, summarize_scalar, variable_summaries, vh_log, weight_variable
+from util import bias_variable, conv2d, summarize_scalar, variable_summaries, vh_log, weight_variable
 
 register()
 
@@ -24,10 +24,12 @@ FLAGS = None
 class Agent(object):
     BATCH_SIZE = 1
     HISTORY_SIZE = 4
-    HIDDEN_1_SIZE = 200
-    HIDDEN_2_SIZE = 200
+    KERNEL_SIZE = 5
+    NUM_FEATURES = 20
+    HIDDEN_1_SIZE = 1000
+    HIDDEN_2_SIZE = 1000
     REPLAY_SIZE = 10000
-    GAMMA = 0.95
+    GAMMA = 0.99
 
     def __init__(self, session):
         self.session = session
@@ -41,6 +43,11 @@ class Agent(object):
 
     def make_graph(self):
         self.make_input_graph()
+        if FLAGS.use_convolution:
+            self.make_convolution_graph()
+        else:
+            self.box_activations = self.box_inputs
+            self.NUM_FEATURES = self.box_shape[-1]
         self.make_hidden_1_graph()
         self.make_hidden_2_graph()
         self.make_output_graph()
@@ -48,6 +55,9 @@ class Agent(object):
         self.make_train_graph()
 
     def make_summaries(self):
+        if FLAGS.use_convolution:
+            variable_summaries(self.W_conv, "W_conv")
+            variable_summaries(self.b_conv, "b_conv")
         variable_summaries(self.W_hidden_1, "W_hidden_1")
         variable_summaries(self.b_hidden_1, "b_hidden_1")
         variable_summaries(self.W_hidden_2, "W_hidden_2")
@@ -68,18 +78,29 @@ class Agent(object):
                     self.box_inputs.append(
                         tf.placeholder(tf.float32, [self.BATCH_SIZE] + list(box_space.shape), name="box")
                     )
-        self.box_size = np.prod(box_space.shape)
-        self.n_inputs = self.HISTORY_SIZE * (self.box_size + 1)
+        self.box_shape = box_space.shape
+        self.n_inputs = self.HISTORY_SIZE * (np.prod(self.box_shape) + 1)
+
+    def make_convolution_graph(self):
+        with tf.name_scope("convolution"):
+            self.W_conv = weight_variable([self.KERNEL_SIZE, self.KERNEL_SIZE, self.box_shape[0], self.NUM_FEATURES], name="W")
+            self.b_conv = bias_variable([self.NUM_FEATURES], name="b")
+            self.box_activations = []
+            for box in self.box_inputs:
+                z = conv2d(box, self.W_conv) + self.b_conv
+                self.box_activations.append(tf.sigmoid(z))
 
     def make_hidden_1_graph(self):
+        conv_layer_size = self.NUM_FEATURES * self.box_shape[1] * self.box_shape[2]
         with tf.name_scope("flatten"):
             flat_input = self.chain_inputs[:]
-            for i in range(self.HISTORY_SIZE):
-                flat_input.append(tf.reshape(self.box_inputs[i], [-1, self.box_size]))
+            for activation in self.box_activations:
+                flat_input.append(tf.reshape(activation, [-1, conv_layer_size]))
             flat_input = tf.concat(flat_input, 1)
+        n_flat = self.HISTORY_SIZE * (1 + conv_layer_size)
 
         with tf.name_scope("hidden_1"):
-            self.W_hidden_1 = weight_variable([self.n_inputs, self.HIDDEN_1_SIZE], name="W")
+            self.W_hidden_1 = weight_variable([n_flat, self.HIDDEN_1_SIZE], name="W")
             self.b_hidden_1 = bias_variable([self.HIDDEN_1_SIZE], name="b")
             z = tf.matmul(flat_input, self.W_hidden_1) + self.b_hidden_1
             self.hidden_1_activation = tf.sigmoid(z)
@@ -158,7 +179,9 @@ class Agent(object):
 
     @property
     def variable_names(self):
-        return [
+        if FLAGS.use_convolution:
+            names = ["W_conv", "b_conv"]
+        return names + [
             "W_hidden_1", "b_hidden_1",
             "W_hidden_2", "b_hidden_2",
             "W_output", "b_output",
@@ -174,6 +197,7 @@ class Agent(object):
             os.makedirs(outputs_dir)
         arrays = self.session.run(self.variables)
         for arr, name in zip(arrays, self.variable_names):
+            arr = arr.flatten()
             filename = os.path.join(outputs_dir, "{}.csv".format(name))
             np.savetxt(filename, arr, delimiter=",")
         print("Saved parameters to {}".format(outputs_dir))
@@ -182,6 +206,7 @@ class Agent(object):
         for variable, name in zip(self.variables, self.variable_names):
             filename = os.path.join(params_dir, "{}.csv".format(name))
             arr = np.loadtxt(filename, delimiter=",")
+            arr = arr.reshape(variable.shape)
             self.session.run(variable.assign(arr))
         print("Loaded parameters from {}".format(params_dir))
 
@@ -258,4 +283,5 @@ if __name__ == "__main__":
     FLAGS, unparsed = parser.parse_known_args()
     FLAGS.do_render = not FLAGS.no_render
     main_fun = main_with_render if FLAGS.do_render else main
+    FLAGS.use_convolution = False
     tf.app.run(main=main_fun, argv=[sys.argv[0]] + unparsed)

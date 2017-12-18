@@ -19,6 +19,11 @@ def bias_variable(shape, name, value=0.1):
     return tf.Variable(initial, name=name)
 
 
+def conv2d(input, kernel):
+    """Returns a 2d convolution layer with full stride."""
+    return tf.nn.conv2d(input, kernel, strides=[1, 1, 1, 1], padding='SAME')
+
+
 def variable_summaries(var, name):
     """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
     with tf.name_scope('summaries-{}'.format(name)):
