@@ -3,7 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
-from collections import deque
+from collections import defaultdict, deque
 import os
 import sys
 
@@ -13,7 +13,7 @@ import tensorflow as tf
 from gym_paneldepon.env import register
 from gym_paneldepon.util import print_up
 
-from util import bias_variable, conv2d, summarize_scalar, variable_summaries, vh_log, weight_variable
+from util import bias_variable, conv2d, summarize_scalar, variable_summaries, vh_log, weight_variable, parse_record
 
 register()
 
@@ -22,14 +22,12 @@ FLAGS = None
 
 
 class Agent(object):
-    BATCH_SIZE = 1
-    HISTORY_SIZE = 4
+    BATCH_SIZE = 10
+    HISTORY_SIZE = 3
     KERNEL_SIZE = 5
     NUM_FEATURES = 20
     FC_1_SIZE = 200
     FC_2_SIZE = 200
-    REPLAY_SIZE = 1000
-    GAMMA = 0.99
 
     def __init__(self, session):
         self.session = session
@@ -38,8 +36,6 @@ class Agent(object):
         self.make_summaries()
         self.writer = tf.summary.FileWriter(FLAGS.log_dir)
         self.writer.add_graph(tf.get_default_graph())
-
-        self.replay_table = deque(maxlen=self.REPLAY_SIZE)
 
     def make_graph(self):
         self.make_input_graph()
@@ -55,17 +51,10 @@ class Agent(object):
         self.make_train_graph()
 
     def make_summaries(self):
-        if FLAGS.use_convolution:
-            variable_summaries(self.W_conv, "W_conv")
-            variable_summaries(self.b_conv, "b_conv")
-        variable_summaries(self.W_fc_1, "W_fc_1")
-        variable_summaries(self.b_fc_1, "b_fc_1")
-        variable_summaries(self.W_fc_2, "W_fc_2")
-        variable_summaries(self.b_fc_2, "b_fc_2")
-        variable_summaries(self.W_output, "W_output")
-        variable_summaries(self.b_output, "b_output")
-
-        tf.summary.histogram("Q", self.output)
+        for variable, name in zip(self.variables, self.variable_names):
+            variable_summaries(variable, name)
+        tf.summary.histogram("policy_head", self.policy_head)
+        tf.summary.histogram("value_head", self.value_head)
 
     def make_input_graph(self):
         chain_space, box_space = self.env.observation_space.spaces
@@ -79,7 +68,7 @@ class Agent(object):
                         tf.placeholder(tf.float32, [self.BATCH_SIZE] + list(box_space.shape), name="box")
                     )
         self.box_shape = box_space.shape
-        self.n_inputs = self.HISTORY_SIZE * (np.prod(self.box_shape) + 1)
+        # self.n_inputs = self.HISTORY_SIZE * (np.prod(self.box_shape) + 1)
 
     def make_convolution_graph(self):
         with tf.name_scope("convolution"):
@@ -106,67 +95,66 @@ class Agent(object):
             self.fc_1_activation = tf.sigmoid(z)
 
     def make_fc_2_graph(self):
-        with tf.name_scope("fully_connected_2"):
-            self.W_fc_2 = weight_variable([self.FC_1_SIZE, self.FC_2_SIZE], name="W")
-            self.b_fc_2 = bias_variable([self.FC_2_SIZE], name="b")
-            z = tf.matmul(self.fc_1_activation, self.W_fc_2) + self.b_fc_2
-            self.fc_2_activation = tf.sigmoid(z)
+        with tf.name_scope("fully_connected_2p"):
+            self.W_fc_2_policy = weight_variable([self.FC_1_SIZE, self.FC_2_SIZE], name="W")
+            self.b_fc_2_policy = bias_variable([self.FC_2_SIZE], name="b")
+            z = tf.matmul(self.fc_1_activation, self.W_fc_2_policy) + self.b_fc_2_policy
+            self.fc_2_activation_policy = tf.sigmoid(z)
+
+        with tf.name_scope("fully_connected_2v"):
+            self.W_fc_2_value = weight_variable([self.FC_1_SIZE, self.FC_2_SIZE], name="W")
+            self.b_fc_2_value = bias_variable([self.FC_2_SIZE], name="b")
+            z = tf.matmul(self.fc_1_activation, self.W_fc_2_value) + self.b_fc_2_value
+            self.fc_2_activation_value = tf.sigmoid(z)
 
     def make_output_graph(self):
-        self.n_outputs = self.env.action_space.n
-        with tf.name_scope("output"):
-            self.W_output = weight_variable([self.FC_2_SIZE, self.n_outputs], name="W")
-            self.b_output = bias_variable([self.n_outputs], name="b")
-            z = tf.matmul(self.fc_2_activation, self.W_output) + self.b_output
-            self.output = z
-            self.action = tf.argmax(self.output, 1)
+        self.n_actions = self.env.action_space.n
+        with tf.name_scope("policy"):
+            self.W_policy = weight_variable([self.FC_2_SIZE, self.n_actions], name="W")
+            self.b_policy = bias_variable([self.n_actions], name="b")
+            self.policy_head = tf.matmul(self.fc_2_activation_policy, self.W_policy) + self.b_policy
+
+        with tf.name_scope("value"):
+            self.W_value = weight_variable([self.FC_2_SIZE, 1], name="W")
+            self.b_value = bias_variable([1], name="b")
+            self.value_head = tf.matmul(self.fc_2_activation_value, self.W_value) + self.b_value
 
     def make_loss_graph(self):
         with tf.name_scope("loss"):
-            self.target = tf.placeholder(tf.float32, [self.BATCH_SIZE, self.n_outputs], name="target")
+            self.policy_target = tf.placeholder(tf.float32, [self.BATCH_SIZE, self.n_actions], name="policy_target")
+            self.value_target = tf.placeholder(tf.float32, [self.BATCH_SIZE, 1], name="value_target")
             with tf.name_scope("error"):
-                self.error = tf.reduce_sum(tf.square(self.output - self.target))
-            with tf.name_scope("L2-norm"):
-                self.L2_norm = sum(tf.reduce_sum(tf.square(variable)) for variable in self.variables)
-            self.loss = self.error + self.L2_norm * 1e-7
+                self.loss_xent = tf.nn.softmax_cross_entropy_with_logits(labels=self.policy_target, logits=self.policy_head)
+                self.loss_mse = tf.reduce_mean(tf.squared_difference(self.value_head, self.value_target))
+            with tf.name_scope("regularization"):
+                regularizer = tf.contrib.layers.l2_regularizer(scale=0.0001)
+                reg_variables = tf.trainable_variables()
+                self.reg_term = tf.contrib.layers.apply_regularization(regularizer, reg_variables)
+            self.loss = self.loss_xent + self.loss_mse + self.reg_term
 
     def make_train_graph(self):
         with tf.name_scope("train"):
-            self.optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
+            # self.optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
+            self.optimizer = tf.train.MomentumOptimizer(learning_rate=FLAGS.learning_rate, momentum=0.9, use_nesterov=True)
             self.train_step = self.optimizer.minimize(self.loss)
 
-    def get_feed_dict(self, states):
-        feed_dict = {}
-        for i, state in enumerate(states):
-            chain, box = state
-            feed_dict[self.chain_inputs[i]] = [[chain]]
-            feed_dict[self.box_inputs[i]] = [box]
-        return feed_dict
+    def get_feed_dict(self, experiences):
+        feed_dict = defaultdict(list)
+        for states, actions, value in experiences:
+            for chain_input, box_input, state in zip(self.chain_inputs, self.box_inputs, states):
+                chain, box = state
+                feed_dict[chain_input].append([chain])
+                feed_dict[box_input].append(box)
+            feed_dict[self.policy_target].append(actions)
+            feed_dict[self.value_target].append([value])
+        return dict(feed_dict)
 
-    def get_action(self, states):
-        return self.session.run(self.action, feed_dict=self.get_feed_dict(states))
-
-    def record_experience(self, experience):
-        self.replay_table.append(experience)
-
-    def learn(self, index):
-        states, action, reward, new_state = self.replay_table[index]
-        new_states = states[1:] + [new_state]
-        Q_base = self.session.run(self.output, feed_dict=self.get_feed_dict(states))  # noqa: N806
-        Q = self.session.run(self.output, feed_dict=self.get_feed_dict(new_states))  # noqa: N806
-        Q_target = Q_base  # noqa: N806
-        Q_target[0, action[0]] = reward + self.GAMMA * np.max(Q)
-        feed_dict = self.get_feed_dict(states)
-        feed_dict[self.target] = Q_target
-        self.session.run(self.train_step, feed_dict=feed_dict)
-
-    def learn_from_memory(self):
-        history_size = len(self.replay_table)
-        if history_size > 1:
-            self.learn(np.random.randint(0, history_size - 1))
-
-    def learn_from_last(self):
-        self.learn(-1)
+    def get_policy_action(self, states):
+        experiences = [(states, [0] * self.n_actions, 0)] * self.BATCH_SIZE
+        feed_dict = self.get_feed_dict(experiences)
+        actions = self.session.run(self.policy_head, feed_dict=feed_dict)[0]
+        print(actions)
+        return np.argmax(actions)
 
     def render_in_place(self):
         self.env.render()
@@ -185,8 +173,10 @@ class Agent(object):
             names = []
         return names + [
             "W_fc_1", "b_fc_1",
-            "W_fc_2", "b_fc_2",
-            "W_output", "b_output",
+            "W_fc_2_policy", "b_fc_2_policy",
+            "W_fc_2_value", "b_fc_2_value",
+            "W_policy", "b_policy",
+            "W_value", "b_value",
         ]
 
     @property
@@ -217,43 +207,38 @@ def main(*args, **kwargs):
     with tf.Session() as session:
         agent = Agent(session)
         merged = tf.summary.merge_all()
-        states = deque(maxlen=agent.HISTORY_SIZE)
         session.run(tf.global_variables_initializer())
         if FLAGS.params_dir:
             agent.load(FLAGS.params_dir)
-        for i in range(FLAGS.num_episodes):
-            exploration = FLAGS.exploration / (0.1 * i + 2)
-            vh_log({"exploration": exploration}, i)
-            total_reward = 0
-            state = agent.env.reset()
-            # Fully raise the panel stack
-            for k in range(agent.HISTORY_SIZE):
-                state, _, _, _ = agent.env.step(1)
-                states.append(state)
-            frames = []
-            for j in range(FLAGS.num_steps):
-                action = agent.get_action(list(states))
-                if np.random.rand(1) < exploration:
-                    action[0] = agent.env.action_space.sample()
-                new_state, reward, _, _ = agent.env.step(action[0])
-                agent.record_experience((list(states), action, reward, new_state))
-                agent.learn_from_memory()
-                agent.learn_from_last()
-                if FLAGS.do_render:
-                    # We only render 10% from the start of the episode so as not to clog the console.
-                    frames.append(agent.render_ansi().getvalue())
-                    if j % 10 == 0:
-                        print(frames.pop(0), end="")
-                total_reward += reward
-                state = new_state
-                states.append(state)
-            if FLAGS.do_render:
-                for _ in range(5):
-                    print()
-            vh_log({"reward": total_reward}, i)
-            summarize_scalar(agent.writer, "Reward", total_reward, i)
-            summary = session.run(merged, feed_dict=agent.get_feed_dict(list(states)))
-            agent.writer.add_summary(summary, i)
+        i = 0
+        while True:
+            for n in range(1, 9):
+                with open("tree_search_records/tree_search_{}.record".format(n)) as f:
+                    g = parse_record(f.readlines(), num_frames=Agent.HISTORY_SIZE)
+                experiences = deque(maxlen=agent.BATCH_SIZE)
+                try:
+                    while True:
+                        for _ in range(agent.BATCH_SIZE):
+                            experiences.append(next(g))
+                        feed_dict = agent.get_feed_dict(experiences)
+                        session.run(agent.train_step, feed_dict=feed_dict)
+                        if i % 10 == 0:
+                            summary = session.run(merged, feed_dict=feed_dict)
+                            agent.writer.add_summary(summary, i)
+                        i += 1
+                except StopIteration:
+                    pass
+
+                total_reward = 0
+                state = agent.env.reset()
+                states = deque([state] * agent.HISTORY_SIZE, maxlen=agent.HISTORY_SIZE)
+                for j in range(100):
+                    state, reward, _, _ = agent.env.step(agent.get_policy_action(list(states)))
+                    states.append(state)
+                    total_reward += reward
+                    agent.env.render()
+                print(total_reward)
+            print("epoch done")
         agent.dump()
         agent.writer.close()
 
@@ -285,5 +270,5 @@ if __name__ == "__main__":
     FLAGS, unparsed = parser.parse_known_args()
     FLAGS.do_render = not FLAGS.no_render
     main_fun = main_with_render if FLAGS.do_render else main
-    FLAGS.use_convolution = False
+    FLAGS.use_convolution = True
     tf.app.run(main=main_fun, argv=[sys.argv[0]] + unparsed)
