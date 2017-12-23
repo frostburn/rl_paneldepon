@@ -11,6 +11,9 @@ import numpy as np
 import tensorflow as tf
 
 
+GAMMA = 0.95
+
+
 def weight_variable(shape, name, stddev=None):
     """
     Create a weight variable with appropriate initialization.
@@ -78,14 +81,13 @@ def parse_record(lines, num_frames=3):
 
     values = []
     value = 0
-    gamma = 0.95
     for reward in reversed(rewards):
-        value = reward + gamma * value
+        value = reward + GAMMA * value
         values.insert(0, value)
 
     result = []
     frames = deque(maxlen=num_frames)
-    for state, action, value in list(zip(states, actions, values))[:-100]:
+    for state, action, value in list(zip(states, actions, values))[:-50]:
         frames.append(state)
         action_one_hot = np.zeros(env.action_space.n)
         action_one_hot[action] = 1
